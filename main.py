@@ -17,6 +17,7 @@ DEFAULT_REPOSITORY = "oss2026hnu/reposcore-py"
 app = typer.Typer(help="reposcore-py CLI")
 
 
+
 # --format 옵션을 csv, txt, html로 제한하기 위한 Enum 클래스 정의
 class OutputFormatOption(str, Enum):
     csv = "csv"
@@ -123,7 +124,6 @@ def main(
                     "pullRequests": {"totalCount": score.feature_bug_pr_count + score.doc_pr_count + score.typo_pr_count},
                     "totalScore": score.score
                 })
-            
             content = build_output(aggregated_results, format_value)
             write_output(content, output, format_value)
         except Exception as error:
