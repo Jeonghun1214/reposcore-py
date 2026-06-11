@@ -4,7 +4,7 @@ from gql import Client, gql
 from gql.transport.requests import RequestsHTTPTransport
 from pydantic import BaseModel
 from calc_score import UserContributionCounts
-from typing import List, Tuple, Generic, TypeVar
+from typing import Generic, TypeVar
 
 
 # ── Pydantic 모델 정의 ──────────────────────────────────────────
@@ -186,7 +186,7 @@ def fetch_contributions(repository: str, token: str) -> list[UserContributionCou
     return list(contributions.values())
 
 
-def fetch_open_issue_claims(repository: str, token: str, keywords: List[str] | None = None) -> Tuple[list, list]:
+def fetch_open_issue_claims(repository: str, token: str, keywords: list[str] | None = None) -> tuple[list, list]:
     """Open 이슈와 최근 댓글을 조회하여 선점 키워드 매칭 결과를 반환합니다.
 
     반환값: (claimed_issues, unclaimed_issues)
