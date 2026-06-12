@@ -4,12 +4,9 @@ from gql import Client, gql
 from gql.transport.requests import RequestsHTTPTransport
 from pydantic import BaseModel
 from calc_score import UserContributionCounts
-from typing import Generic, TypeVar
 
 
 # ── Pydantic 모델 정의 ──────────────────────────────────────────
-
-T = TypeVar("T")
 
 class Author(BaseModel):
     login: str
@@ -21,22 +18,22 @@ class PageInfo(BaseModel):
     hasNextPage: bool
     endCursor: str | None
 
-class NodeList(BaseModel, Generic[T]):
-    nodes: list[T]
-
-class Connection(BaseModel, Generic[T]):
-    pageInfo: PageInfo
-    nodes: list[T]
+class LabelList(BaseModel):
+    nodes: list[Label]
 
 class AuthoredLabeledNode(BaseModel):
     author: Author | None
-    labels: NodeList[Label]
+    labels: LabelList
+
+class AuthoredLabeledConnection(BaseModel):
+    pageInfo: PageInfo
+    nodes: list[AuthoredLabeledNode]
 
 class IssueRepository(BaseModel):
-    issues: Connection[AuthoredLabeledNode]
+    issues: AuthoredLabeledConnection
 
 class PRRepository(BaseModel):
-    pullRequests: Connection[AuthoredLabeledNode]
+    pullRequests: AuthoredLabeledConnection
 
 class IssueResponse(BaseModel):
     repository: IssueRepository
@@ -51,14 +48,21 @@ class CommentNode(BaseModel):
     bodyText: str | None
     createdAt: str | None
 
+class CommentList(BaseModel):
+    nodes: list[CommentNode]
+
 class IssueClaimNode(AuthoredLabeledNode):
     number: int
     title: str
     url: str
-    comments: NodeList[CommentNode]
+    comments: CommentList
+
+class IssueClaimConnection(BaseModel):
+    pageInfo: PageInfo
+    nodes: list[IssueClaimNode]
 
 class IssueClaimRepository(BaseModel):
-    issues: Connection[IssueClaimNode]
+    issues: IssueClaimConnection
 
 class IssueClaimResponse(BaseModel):
     repository: IssueClaimRepository
