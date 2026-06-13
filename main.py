@@ -1,10 +1,11 @@
 from __future__ import annotations
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 import os
 import sys
+from datetime import datetime, timezone
 from enum import Enum
-from importlib.metadata import version, PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated
 
@@ -12,11 +13,14 @@ import typer
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 
 from cache_manager import load_cache, save_cache
-from calc_score import UserContributionCounts, calculate_total_scores
+from calc_score import (
+    UserContributionCounts,
+    UserScore,
+    calculate_repository_scores,
+    calculate_total_scores,
+)
 from gh_service import fetch_contributions, fetch_multiple_contributions
 from output_writer import build_output, write_output
-
-DEFAULT_REPOSITORY = "oss2026hnu/reposcore-py"
 
 app = typer.Typer(help="reposcore-py CLI")
 
@@ -58,11 +62,31 @@ def _dump_contributions(
     ]
 
 
+def _score_to_result(score: UserScore) -> dict:
+    """UserScore를 output_writer가 기대하는 dict 형태로 변환합니다."""
+    contribution = score.contribution
+    return {
+        "nameWithOwner": contribution.user,
+        "issues": {
+            "totalCount": contribution.feature_bug_issue_count
+            + contribution.doc_issue_count,
+        },
+        "pullRequests": {
+            "totalCount": contribution.feature_bug_pr_count
+            + contribution.doc_pr_count
+            + contribution.typo_pr_count,
+        },
+        "totalScore": score.score,
+    }
+
+
 def _load_or_fetch_contributions(
     repos: list[str],
     token: str,
     output: str | None,
     no_cache: bool = False,
+    since: date | None = None,
+    until: date | None = None,
 ) -> list[list[UserContributionCounts]]:
     all_contributions: list[list[UserContributionCounts]] = [[] for _ in repos]
     cache_paths: list[Path | None] = []
@@ -91,11 +115,13 @@ def _load_or_fetch_contributions(
 
     if missing_repos:
         if len(missing_repos) == 1:
-            fetched_contributions = [fetch_contributions(missing_repos[0], token)]
+            fetched_contributions = [fetch_contributions(missing_repos[0], token, since, until)]
         else:
             fetched_contributions = fetch_multiple_contributions(
                 missing_repos,
                 token,
+                since,
+                until,
             )
 
         for index, repo, contributions in zip(
@@ -132,16 +158,26 @@ def _load_or_fetch_contributions(
 def main(
     repos: Annotated[
         list[str],
-        typer.Argument(help="조회할 GitHub 저장소 경로입니다. 예: owner/repo1 owner/repo2"),
+        typer.Argument(
+            help="조회할 GitHub 저장소 경로입니다. 예: owner/repo1 owner/repo2"
+        ),
     ],
     _version: Annotated[
         bool,
-        typer.Option("--version", "-v", help="현재 버전을 출력하고 종료합니다.", is_eager=True, callback=version_callback),
+        typer.Option(
+            "--version",
+            "-v",
+            help="현재 버전을 출력하고 종료합니다.",
+            is_eager=True,
+            callback=version_callback,
+        ),
     ] = False,
     # 기존 str 타입에서 Enum(OutputFormatOption) 기반 타입으로 변경하여 CLI 검증 추가
     format: Annotated[
         OutputFormatOption,
-        typer.Option("--format", "-f", help="출력 파일 형식을 지정합니다. (csv | txt | html)"),
+        typer.Option(
+            "--format", "-f", help="출력 파일 형식을 지정합니다. (csv | txt | html)"
+        ),
     ] = OutputFormatOption.txt,
     output: Annotated[
         str | None,
@@ -156,17 +192,38 @@ def main(
     ] = None,
     token: Annotated[
         str | None,
-        typer.Option("--token", "-t", help="GitHub Personal Access Token. 미제공 시 GITHUB_TOKEN 환경 변수를 사용합니다."),
+        typer.Option(
+            "--token",
+            "-t",
+            help=(
+                "GitHub Personal Access Token. "
+                "미제공 시 GITHUB_TOKEN 환경 변수를 사용합니다."
+            ),
+        ),
     ] = None,
     # 요구사항에 명시된 다중 저장소 집계 여부 선택을 위한 플래그 추가
     aggregate: Annotated[
         bool,
-        typer.Option("--aggregate", help="여러 저장소의 결과를 하나로 합산하여 전체 기여 점수를 출력합니다."),
+        typer.Option(
+            "--aggregate",
+            help="여러 저장소의 결과를 하나로 합산하여 전체 기여 점수를 출력합니다.",
+        ),
     ] = False,
     no_cache: Annotated[
         bool,
-        typer.Option("--no-cache", help="캐시를 사용하지 않고 GitHub API에서 최신 데이터를 다시 조회합니다."),
+        typer.Option(
+            "--no-cache",
+            help="캐시를 사용하지 않고 GitHub API에서 최신 데이터를 다시 조회합니다.",
+        ),
     ] = False,
+    since: Annotated[
+        str | None,
+        typer.Option("--since", help="이 날짜 이후의 기여만 점수 계산에 포함합니다. 예: 2026-06-01 (YYYY-MM-DD)"),
+    ] = None,
+    until: Annotated[
+        str | None,
+        typer.Option("--until", help="이 날짜까지의 기여만 점수 계산에 포함합니다. 예: 2026-06-10 (YYYY-MM-DD)"),
+    ] = None,
 ) -> None:
     """Fetch basic repository counts from GitHub GraphQL API."""
 
@@ -176,15 +233,40 @@ def main(
 
     resolved_token = token or os.environ.get("GITHUB_TOKEN")
     if not resolved_token:
-        typer.echo("오류: GITHUB_TOKEN 환경 변수 또는 --token 옵션이 필요합니다.", err=True)
+        typer.echo(
+            "오류: GITHUB_TOKEN 환경 변수 또는 --token 옵션이 필요합니다.", err=True
+        )
         raise typer.Exit(1)
 
+    parsed_since: date | None = None
+    parsed_until: date | None = None
+
+    if since is not None:
+        try:
+            parsed_since = date.fromisoformat(since)
+        except ValueError:
+            print(f"오류: --since 날짜 형식이 잘못되었습니다. YYYY-MM-DD 형식으로 입력하세요. (입력값: {since})", file=sys.stderr)
+            raise typer.Exit(1)
+
+    if until is not None:
+        try:
+            parsed_until = date.fromisoformat(until)
+        except ValueError:
+            print(f"오류: --until 날짜 형식이 잘못되었습니다. YYYY-MM-DD 형식으로 입력하세요. (입력값: {until})", file=sys.stderr)
+            raise typer.Exit(1)
+
+    if parsed_since is not None and parsed_until is not None and parsed_since > parsed_until:
+        print("오류: --since 날짜가 --until 날짜보다 늦습니다.", file=sys.stderr)
+        raise typer.Exit(1)
+    
     try:
         all_contributions = _load_or_fetch_contributions(
             repos,
             resolved_token,
             output,
             no_cache,
+            parsed_since,
+            parsed_until,
         )
 
     except ValueError as error:
@@ -231,51 +313,23 @@ def main(
     # --- 수집 완료 데이터 출력 및 집계(--aggregate) 제어 로직 ---
     format_value = format.value
 
-    if aggregate:
-        try:
-            total_scores = calculate_total_scores(all_contributions)
+    try:
+        if aggregate:
+            scores = calculate_total_scores(all_contributions)
+        else:
+            # 저장소별로 점수를 매긴 뒤 하나의 목록으로 펼칩니다.
+            scores = [
+                score
+                for repo_contributions in all_contributions
+                for score in calculate_repository_scores(repo_contributions)
+            ]
 
-            # output_writer가 100% 호환되도록 중첩 딕셔너리 구조로 직접 매핑 변환
-            aggregated_results = []
-            for score in total_scores:
-                c = score.contribution
-                aggregated_results.append({
-                    "nameWithOwner": c.user,
-                    "issues": {"totalCount": c.feature_bug_issue_count + c.doc_issue_count},
-                    "pullRequests": {"totalCount": c.feature_bug_pr_count + c.doc_pr_count + c.typo_pr_count},
-                    "totalScore": score.score
-                })
-            content = build_output(aggregated_results, format_value)
-            write_output(content, output, format_value)
-        except Exception as error:
-            print(f"집계 출력 오류: {error}", file=sys.stderr)
-            raise typer.Exit(1) from error
-    else:
-        try:
-            # 개별 출력 모드에서도 output_writer 규격에 맞추어 변환 처리
-            flatten_results = []
-            for repo_contribs in all_contributions:
-                for contrib in repo_contribs:
-                    flatten_results.append(
-                        {
-                            "nameWithOwner": contrib.user,
-                            "issues": {
-                                "totalCount": contrib.feature_bug_issue_count
-                                + contrib.doc_issue_count,
-                            },
-                            "pullRequests": {
-                                "totalCount": contrib.feature_bug_pr_count
-                                + contrib.doc_pr_count
-                                + contrib.typo_pr_count,
-                            },
-                        }
-                    )
-
-            content = build_output(flatten_results, format_value)
-            write_output(content, output, format_value)
-        except Exception as error:
-            print(f"출력 오류: {error}", file=sys.stderr)
-            raise typer.Exit(1) from error
+        results = [_score_to_result(score) for score in scores]
+        content = build_output(results, format_value)
+        write_output(content, output, format_value)
+    except Exception as error:
+        print(f"출력 오류: {error}", file=sys.stderr)
+        raise typer.Exit(1) from error
 
 
 def cli() -> None:
