@@ -14,6 +14,7 @@ update-synopsis.py — CLI 도움말을 캡처하여 최상위 README.md를 생�
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +32,12 @@ def capture_cli_help() -> str:
 
     last_error = ""
     env = os.environ.copy()
-    env["COLUMNS"] = "80"
+    env["COLUMNS"] = "100"
+
+    # CI 환경(GitHub Actions 등)에서 Rich의 강제 색상/서식 출력 방지
+    env["NO_COLOR"] = "1"
+    env.pop("GITHUB_ACTIONS", None)
+    env.pop("CI", None)
 
     for command in candidates:
         try:
@@ -57,15 +63,27 @@ def capture_cli_help() -> str:
 
 
 def normalize(help_text: str) -> str:
+    # ANSI 색상 코드 제거 (환경 변수를 무시하고 강제로 색상이 섞인 경우 정규식 매칭 실패 방지)
+    help_text = re.sub(r'\x1b\[[0-9;]*m', '', help_text)
+
+    # 터미널 박스 문자(Rich) 제거 (GitHub Markdown에서의 한글 너비 정렬 깨짐 방지)
+    # 로컬(Unicode: ╭, ─, │) 및 CI 폴백(ASCII: +, -, |) 환경을 모두 고려
+    help_text = re.sub(r'^[╭\+][─\-]+\s*(.*?)\s*[─\-]*[╮\+]$', r'\1', help_text, flags=re.MULTILINE)
+    help_text = re.sub(r'^[╰\+][─\-]*[╯\+]$', '', help_text, flags=re.MULTILINE)
+    help_text = re.sub(r'^[│\|]', ' ', help_text, flags=re.MULTILINE)
+    help_text = re.sub(r'\s*[│\|]$', '', help_text, flags=re.MULTILINE)
+
     for marker in ["Usage:", "usage:"]:
         index = help_text.find(marker)
 
         if index != -1:
             normalized = help_text[index:].strip()
-            return "\n".join(line.rstrip() for line in normalized.splitlines())
+            result = "\n".join(line.rstrip() for line in normalized.splitlines())
+            return re.sub(r'\n{3,}', '\n\n', result)
 
     normalized = help_text.strip()
-    return "\n".join(line.rstrip() for line in normalized.splitlines())
+    result = "\n".join(line.rstrip() for line in normalized.splitlines())
+    return re.sub(r'\n{3,}', '\n\n', result)
 
 
 def render_readme(synopsis: str) -> str:
